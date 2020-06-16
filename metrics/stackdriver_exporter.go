@@ -123,11 +123,12 @@ func init() {
 		{metricskey.KnativeSourceMetrics, resourceTemplate{metricskey.ResourceTypeKnativeSource, metricskey.KnativeSourceLabels}},
 	}
 
-	for _, item := range metricsToTemplates {
-		for k := range item.metrics {
-			metricToResourceLabels[k] = &item.template
+	for i := range metricsToTemplates {
+		for k := range metricsToTemplates[i].metrics {
+			metricToResourceLabels[k] = &metricsToTemplates[i].template
 		}
 	}
+	fmt.Println("Done")
 }
 
 type pollOnlySDExporter struct {
@@ -194,8 +195,8 @@ func generateStackdriverOptions(config *metricsConfig, logger *zap.SugaredLogger
 	}
 }
 
-func sdCustomMetricsRecorder(mc metricsConfig) func(context.Context, []stats.Measurement, ...stats.Options) error {
-	return func(ctx context.Context, mss []stats.Measurement, ros ...stats.Options) error {
+func sdResourceExtractor(mc metricsConfig) func([]stats.Measurement, context.Context) (context.Context, error) {
+	return func(mss []stats.Measurement, ctx context.Context) (context.Context, error) {
 		// Filter the measuremenst array to only include permitted metrics.
 		i := 0
 		var templ *resourceTemplate
@@ -205,16 +206,12 @@ func sdCustomMetricsRecorder(mc metricsConfig) func(context.Context, []stats.Mea
 				mss[i] = m
 				i++
 				if templ != nil && templ != t {
-					return fmt.Errorf("Mixed resource type measurements in one report: %v", mss)
+					return nil, fmt.Errorf("Mixed resource type measurements in one report: %v", mss)
 				}
 				templ = t
 			}
 		}
-		// Trim the array
-		mss = mss[:i]
-		if i == 0 {
-			return nil
-		}
+
 		// Extract resource, if possible
 		if templ != nil {
 			tagMap := tag.FromContext(ctx)
@@ -230,13 +227,27 @@ func sdCustomMetricsRecorder(mc metricsConfig) func(context.Context, []stats.Mea
 					tagMutations = append(tagMutations, tag.Delete(tagKey))
 				}
 			}
-			var err error
-			ctx, err = tag.New(metricskey.WithResource(ctx, r), tagMutations...)
-			if err != nil {
-				return err
+			return tag.New(metricskey.WithResource(ctx, r), tagMutations...)
+		}
+		return ctx, nil
+	}
+}
+func sdCustomMetricsRecorder(mc metricsConfig) func(context.Context, []stats.Measurement, ...stats.Options) error {
+	return func(ctx context.Context, mss []stats.Measurement, ros ...stats.Options) error {
+		// Filter the measuremenst array to only include permitted metrics.
+		i := 0
+		for _, m := range mss {
+			metricType := path.Join(mc.stackdriverMetricTypePrefix, m.Measure().Name())
+			if _, ok := metricToResourceLabels[metricType]; ok {
+				mss[i] = m
+				i++
 			}
 		}
-
+		// Trim the array
+		if i == 0 {
+			return nil
+		}
+		mss = mss[:i]
 		return stats.RecordWithOptions(ctx, append(ros, stats.WithMeasurements(mss...))...)
 	}
 }

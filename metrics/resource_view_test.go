@@ -22,7 +22,8 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"net/http"
+
+	//"net/http"
 	"os"
 	"sort"
 	"testing"
@@ -35,6 +36,7 @@ import (
 	"go.opencensus.io/resource"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
+	"go.opencensus.io/tag"
 	"google.golang.org/api/option"
 	metricpb "google.golang.org/genproto/googleapis/api/metric"
 	monitoredrespb "google.golang.org/genproto/googleapis/api/monitoredres"
@@ -46,7 +48,11 @@ import (
 )
 
 var (
-	r = resource.Resource{Labels: map[string]string{"foo": "bar"}}
+	r               = resource.Resource{Labels: map[string]string{"foo": "bar"}}
+	NamespaceTagKey = tag.MustNewKey(metricskey.LabelNamespaceName)
+	ServiceTagKey   = tag.MustNewKey(metricskey.LabelServiceName)
+	ConfigTagKey    = tag.MustNewKey(metricskey.LabelConfigurationName)
+	RevisionTagKey  = tag.MustNewKey(metricskey.LabelRevisionName)
 )
 
 func TestRegisterResourceView(t *testing.T) {
@@ -201,6 +207,18 @@ func TestMetricsExport(t *testing.T) {
 		Measure:     counter,
 		Aggregation: view.Count(),
 	}
+
+	actualPodCountM := stats.Int64(
+		"actual_pods",
+		"Number of pods that are allocated currently",
+		stats.UnitDimensionless)
+	actualPodsCountView := &view.View{
+		Description: "Number of pods that are allocated currently",
+		Measure:     actualPodCountM,
+		Aggregation: view.LastValue(),
+		TagKeys:     []tag.Key{NamespaceTagKey, ServiceTagKey, ConfigTagKey, RevisionTagKey},
+	}
+
 	expected := []metricExtract{
 		{"global_export_counts", map[string]string{}, 2},
 		{"resource_global_export_count", map[string]string{}, 2},
@@ -228,128 +246,164 @@ func TestMetricsExport(t *testing.T) {
 		name     string
 		init     func() error
 		validate func(t *testing.T)
-	}{{
-		name: "Prometheus",
-		init: func() error {
-			return UpdateExporter(configForBackend(Prometheus), logtesting.TestLogger(t))
-		},
-		validate: func(t *testing.T) {
-			resp, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", 9090))
-			if err != nil {
-				t.Fatalf("failed to fetch prometheus metrics: %+v", err)
-			}
-			defer resp.Body.Close()
-			t.Logf("TODO: Validate Prometheus")
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("failed to read prometheus response: %+v", err)
-			}
-			want := `# HELP testComponent_global_export_counts Count of exports via standard OpenCensus view.
-# TYPE testComponent_global_export_counts counter
-testComponent_global_export_counts 2
-# HELP testComponent_resource_global_export_count Count of exports via RegisterResourceView.
-# TYPE testComponent_resource_global_export_count counter
-testComponent_resource_global_export_count 2
-# HELP testComponent_testing_value Test value
-# TYPE testComponent_testing_value gauge
-testComponent_testing_value{project="p1",revision="r1"} 0
-testComponent_testing_value{project="p1",revision="r2"} 1
-`
-			if diff := cmp.Diff(want, string(body)); diff != "" {
-				t.Errorf("Unexpected prometheus output (-want +got):\n%s", diff)
-			}
-		},
-	}, {
-		name: "OpenCensus",
-		init: func() error {
-			if err := ocFake.start(); err != nil {
-				return err
-			}
-			t.Logf("Created exporter at %s", ocFake.address)
-			return UpdateExporter(configForBackend(OpenCensus), logtesting.TestLogger(t))
-		},
-		validate: func(t *testing.T) {
-			// We unregister the views because this is one of two ways to flush
-			// the internal aggregation buffers; the other is to have the
-			// internal reporting period duration tick, which is at least
-			// [new duration] in the future.
-			view.Unregister(globalCounter)
-			UnregisterResourceView(gaugeView, resourceCounter)
-			FlushExporter()
+	}{ /*{
+				name: "Prometheus",
+				init: func() error {
+					return UpdateExporter(configForBackend(Prometheus), logtesting.TestLogger(t))
+				},
+				validate: func(t *testing.T) {
+					resp, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", 9090))
+					if err != nil {
+						t.Fatalf("failed to fetch prometheus metrics: %+v", err)
+					}
+					defer resp.Body.Close()
+					t.Logf("TODO: Validate Prometheus")
+					body, err := ioutil.ReadAll(resp.Body)
+					if err != nil {
+						t.Fatalf("failed to read prometheus response: %+v", err)
+					}
+					want := `# HELP testComponent_global_export_counts Count of exports via standard OpenCensus view.
+		# TYPE testComponent_global_export_counts counter
+		testComponent_global_export_counts 2
+		# HELP testComponent_resource_global_export_count Count of exports via RegisterResourceView.
+		# TYPE testComponent_resource_global_export_count counter
+		testComponent_resource_global_export_count 2
+		# HELP testComponent_testing_value Test value
+		# TYPE testComponent_testing_value gauge
+		testComponent_testing_value{project="p1",revision="r1"} 0
+		testComponent_testing_value{project="p1",revision="r2"} 1
+		`
+					if diff := cmp.Diff(want, string(body)); diff != "" {
+						t.Errorf("Unexpected prometheus output (-want +got):\n%s", diff)
+					}
+				},
+			}, {
+				name: "OpenCensus",
+				init: func() error {
+					if err := ocFake.start(); err != nil {
+						return err
+					}
+					t.Logf("Created exporter at %s", ocFake.address)
+					return UpdateExporter(configForBackend(OpenCensus), logtesting.TestLogger(t))
+				},
+				validate: func(t *testing.T) {
+					// We unregister the views because this is one of two ways to flush
+					// the internal aggregation buffers; the other is to have the
+					// internal reporting period duration tick, which is at least
+					// [new duration] in the future.
+					view.Unregister(globalCounter)
+					UnregisterResourceView(gaugeView, resourceCounter)
+					FlushExporter()
 
-			ocFake.srv.Stop() // Force close connections
-			ocFake.srv.GracefulStop()
-			records := []metricExtract{}
-			for record := range ocFake.published {
-				for _, m := range record.Metrics {
-					if len(m.Timeseries) > 0 {
-						labels := map[string]string{}
-						if record.Resource != nil {
-							labels = record.Resource.Labels
+					ocFake.srv.Stop() // Force close connections
+					ocFake.srv.GracefulStop()
+					records := []metricExtract{}
+					for record := range ocFake.published {
+						for _, m := range record.Metrics {
+							if len(m.Timeseries) > 0 {
+								labels := map[string]string{}
+								if record.Resource != nil {
+									labels = record.Resource.Labels
+								}
+								records = append(records, metricExtract{
+									Name:   m.MetricDescriptor.Name,
+									Labels: labels,
+									Value:  m.Timeseries[0].Points[0].GetInt64Value(),
+								})
+							}
 						}
+					}
+
+					if diff := cmp.Diff(expected, records, sortMetrics); diff != "" {
+						t.Errorf("Unexpected OpenCensus exports (-want +got):\n%s", diff)
+					}
+				},
+			},*/{
+			name: "Stackdriver",
+			init: func() error {
+				if err := sdFake.start(); err != nil {
+					return err
+				}
+				conn, err := grpc.Dial(sdFake.address, grpc.WithInsecure())
+				if err != nil {
+					return err
+				}
+				newStackdriverExporterFunc = func(o stackdriver.Options) (view.Exporter, error) {
+					o.MonitoringClientOptions = append(o.MonitoringClientOptions, option.WithGRPCConn(conn))
+					return newOpencensusSDExporter(o)
+				}
+				// File: must exist, be json of credentialsFile, and type must be a jwtConfig or oauth2Config
+				tmp, err := ioutil.TempFile("", "metrics-sd-test")
+				if err != nil {
+					return err
+				}
+				credentialsContent := []byte(`{"type": "service_account"}`)
+				if _, err := tmp.Write(credentialsContent); err != nil {
+					return err
+				}
+				os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmp.Name())
+
+				config := configForBackend(Stackdriver)
+				config.ConfigMap[AllowStackdriverCustomMetricsKey] = "false"
+				config.Component = "autoscaler"
+				return UpdateExporter(config, logtesting.TestLogger(t))
+				//return UpdateExporter(configForBackend(Stackdriver), logtesting.TestLogger(t))
+			},
+			validate: func(t *testing.T) {
+				records := []metricExtract{}
+				for record := range sdFake.published {
+					for _, ts := range record.TimeSeries {
+						//name := ts.Metric.Type[len("custom.googleapis.com/knative.dev/testComponent/"):]
 						records = append(records, metricExtract{
-							Name:   m.MetricDescriptor.Name,
-							Labels: labels,
-							Value:  m.Timeseries[0].Points[0].GetInt64Value(),
+							Name:   ts.Metric.Type,
+							Labels: ts.Resource.Labels,
+							Value:  ts.Points[0].Value.GetInt64Value(),
 						})
 					}
+					if len(records) >= 4 {
+						// There's no way to synchronize on the internal timer used
+						// by metricsexport.IntervalReader, so shut down the
+						// exporter after the first report cycle.
+						FlushExporter()
+						sdFake.srv.GracefulStop()
+					}
 				}
-			}
-
-			if diff := cmp.Diff(expected, records, sortMetrics); diff != "" {
-				t.Errorf("Unexpected OpenCensus exports (-want +got):\n%s", diff)
-			}
-		},
-	}, {
-		name: "Stackdriver",
-		init: func() error {
-			if err := sdFake.start(); err != nil {
-				return err
-			}
-			conn, err := grpc.Dial(sdFake.address, grpc.WithInsecure())
-			if err != nil {
-				return err
-			}
-			newStackdriverExporterFunc = func(o stackdriver.Options) (view.Exporter, error) {
-				o.MonitoringClientOptions = append(o.MonitoringClientOptions, option.WithGRPCConn(conn))
-				return newOpencensusSDExporter(o)
-			}
-			// File: must exist, be json of credentialsFile, and type must be a jwtConfig or oauth2Config
-			tmp, err := ioutil.TempFile("", "metrics-sd-test")
-			if err != nil {
-				return err
-			}
-			credentialsContent := []byte(`{"type": "service_account"}`)
-			if _, err := tmp.Write(credentialsContent); err != nil {
-				return err
-			}
-			os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmp.Name())
-			return UpdateExporter(configForBackend(Stackdriver), logtesting.TestLogger(t))
-		},
-		validate: func(t *testing.T) {
-			records := []metricExtract{}
-			for record := range sdFake.published {
-				for _, ts := range record.TimeSeries {
-					name := ts.Metric.Type[len("custom.googleapis.com/knative.dev/testComponent/"):]
-					records = append(records, metricExtract{
-						Name:   name,
-						Labels: ts.Resource.Labels,
-						Value:  ts.Points[0].Value.GetInt64Value(),
-					})
+				if diff := cmp.Diff(expected, records, sortMetrics); diff != "" {
+					t.Errorf("Unexpected OpenCensus exports (-want +got):\n%s", diff)
 				}
-				if len(records) >= 4 {
-					// There's no way to synchronize on the internal timer used
-					// by metricsexport.IntervalReader, so shut down the
-					// exporter after the first report cycle.
-					FlushExporter()
-					sdFake.srv.GracefulStop()
+			},
+		}, {
+			name: "Stackdriver-not-all-custom-metrics",
+			init: func() error {
+				config := configForBackend(Stackdriver)
+				config.ConfigMap[AllowStackdriverCustomMetricsKey] = "false"
+				config.Component = "autoscaler"
+				return UpdateExporter(config, logtesting.TestLogger(t))
+			},
+			validate: func(t *testing.T) {
+				records := []metricExtract{}
+				for record := range sdFake.published {
+					for _, ts := range record.TimeSeries {
+						name := ts.Metric.Type[len("custom.googleapis.com/knative.dev/testComponent/"):]
+						records = append(records, metricExtract{
+							Name:   name,
+							Labels: ts.Resource.Labels,
+							Value:  ts.Points[0].Value.GetInt64Value(),
+						})
+					}
+					if len(records) >= 4 {
+						// There's no way to synchronize on the internal timer used
+						// by metricsexport.IntervalReader, so shut down the
+						// exporter after the first report cycle.
+						FlushExporter()
+						sdFake.srv.GracefulStop()
+					}
 				}
-			}
-			if diff := cmp.Diff(expected, records, sortMetrics); diff != "" {
-				t.Errorf("Unexpected OpenCensus exports (-want +got):\n%s", diff)
-			}
-		},
-	}}
+				if diff := cmp.Diff(expected, records, sortMetrics); diff != "" {
+					t.Errorf("Unexpected OpenCensus exports (-want +got):\n%s", diff)
+				}
+			},
+		}}
 
 	for _, c := range harnesses {
 		t.Run(c.name, func(t *testing.T) {
@@ -359,10 +413,14 @@ testComponent_testing_value{project="p1",revision="r2"} 1
 				t.Fatalf("unable to init: %+v", err)
 			}
 
+			//view.Register(actualPodsCountView)
+			RegisterResourceView(actualPodsCountView)
 			view.Register(globalCounter)
 			err = RegisterResourceView(gaugeView, resourceCounter)
 			defer func() {
 				view.Unregister(globalCounter)
+				//view.Unregister(actualPodsCountView)
+				UnregisterResourceView(actualPodsCountView)
 				UnregisterResourceView(gaugeView, resourceCounter)
 			}()
 			if err != nil {
@@ -377,6 +435,15 @@ testComponent_testing_value{project="p1",revision="r2"} 1
 				}
 				Record(ctx, gauge.M(int64(i)))
 			}
+			// Test knative revision stackdriver exporters
+			ctx, err := tag.New(context.Background(), tag.Upsert(NamespaceTagKey, "ns"),
+				tag.Upsert(ServiceTagKey, "service"),
+				tag.Upsert(ConfigTagKey, "config"),
+				tag.Upsert(RevisionTagKey, "revision"))
+			if err != nil {
+				t.Fatalf("Unable to create tags %s", err)
+			}
+			Record(ctx, actualPodCountM.M(int64(1)))
 			c.validate(t)
 
 		})

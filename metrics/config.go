@@ -87,6 +87,8 @@ type metricsConfig struct {
 	// writing the metrics to the stats.RecordWithOptions interface.
 	recorder func(context.Context, []stats.Measurement, ...stats.Options) error
 
+	resourceExtractor func([]stats.Measurement, context.Context) (context.Context, error)
+
 	// secret contains credentials for an exporter to use for authentication.
 	secret *corev1.Secret
 
@@ -156,6 +158,15 @@ func (mc *metricsConfig) record(ctx context.Context, mss []stats.Measurement, ro
 		// At this point, it's unclear whether should record or not.
 		return nil
 	}
+
+	if mc.resourceExtractor != nil {
+		var err error
+		ctx, err = mc.resourceExtractor(mss, ctx)
+		if err != nil {
+			return err
+		}
+	}
+
 	opt, err := optionForResource(metricskey.GetResource(ctx))
 	if err != nil {
 		return err
@@ -256,6 +267,7 @@ func createMetricsConfig(ops ExporterOptions, logger *zap.SugaredLogger) (*metri
 
 		if !allowCustomMetrics {
 			mc.recorder = sdCustomMetricsRecorder(mc)
+			mc.resourceExtractor = sdResourceExtractor(mc)
 		}
 
 		if scc.UseSecret {
