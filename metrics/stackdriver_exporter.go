@@ -196,6 +196,7 @@ func generateStackdriverOptions(config *metricsConfig, logger *zap.SugaredLogger
 }
 
 func sdResourceExtractor(mc metricsConfig) func([]stats.Measurement, context.Context) (context.Context, error) {
+	gm := getMergedGCPMetadata(&mc)
 	return func(mss []stats.Measurement, ctx context.Context) (context.Context, error) {
 		// Filter the measuremenst array to only include permitted metrics.
 		i := 0
@@ -217,7 +218,11 @@ func sdResourceExtractor(mc metricsConfig) func([]stats.Measurement, context.Con
 			tagMap := tag.FromContext(ctx)
 			r := resource.Resource{
 				Type:   templ.Type,
-				Labels: map[string]string{},
+				Labels: map[string]string{
+					metricskey.LabelProject: gm.project,
+					metricskey.LabelLocation: gm.location,
+					metricskey.LabelClusterName: gm.cluster,
+				},
 			}
 			tagMutations := make([]tag.Mutator, 0, len(templ.LabelKeys))
 			for k := range templ.LabelKeys {
