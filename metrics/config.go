@@ -161,8 +161,7 @@ func (mc *metricsConfig) record(ctx context.Context, mss []stats.Measurement, ro
 
 	if mc.resourceExtractor != nil {
 		var err error
-		ctx, err = mc.resourceExtractor(mss, ctx)
-		if err != nil {
+		if ctx, err = mc.resourceExtractor(mss, ctx); err != nil {
 			return err
 		}
 	}
