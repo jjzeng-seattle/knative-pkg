@@ -17,9 +17,15 @@ limitations under the License.
 package metricstest
 
 import (
+	"context"
+	"fmt"
 	"reflect"
+	"time"
 
+	"go.opencensus.io/metric/metricdata"
+	"go.opencensus.io/metric/metricexport"
 	"go.opencensus.io/stats/view"
+	"go.opencensus.io/tag"
 	"knative.dev/pkg/test"
 )
 
@@ -112,6 +118,9 @@ func CheckLastValueData(t test.T, name string, wantTags map[string]string, wantV
 	CheckLastValueDataWithMeter(t, name, wantTags, wantValue, nil)
 }
 
+// CHeckLastValueDataWithMeter checks the  view with a name matching the string name in the
+// specified Meter (resource-specific view) to verify that the LastValueData stats are tagged with
+// the tags in wantTags and that wantValue matches the last reported value.
 func CheckLastValueDataWithMeter(t test.T, name string, wantTags map[string]string, wantValue float64, meter view.Meter) {
 	t.Helper()
 	if row := lastRow(t, name, meter); row != nil {
@@ -176,19 +185,99 @@ func lastRow(t test.T, name string, meter view.Meter) *view.Row {
 	return d[len(d)-1]
 }
 
+type metricExtract struct {
+	Data []*metricdata.Metric
+}
+
+func getMetrics() *metricExtract {
+	var me metricExtract
+	// We need to sleep for a moment because stats.Record happens on a
+	// background thread, and ReadAndExport happens on the local thread.
+	// (This is probably an opencensus bug!)
+	time.Sleep(1 * time.Millisecond)
+	metricexport.NewReader().ReadAndExport(&me)
+	return &me
+}
+
+func (me *metricExtract) ExportMetrics(ctx context.Context, data []*metricdata.Metric) error {
+	me.Data = data
+	return nil
+}
+
+// A metricdata.ValueVisitor to extract view data from reported metrics.
+type extractedData struct {
+	data view.AggregationData
+}
+
+func (e *extractedData) VisitFloat64Value(v float64) {
+	e.data = &view.SumData{v}
+}
+
+func (e *extractedData) VisitInt64Value(v int64) {
+	e.data = &view.CountData{v}
+}
+
+func (e *extractedData) VisitDistributionValue(v *metricdata.Distribution) {
+	data := view.DistributionData{
+		Count:          v.Count,
+		Mean:           v.Sum / float64(v.Count),
+		CountPerBucket: make([]int64, len(v.Buckets)),
+	}
+	for i, b := range v.Buckets {
+		data.CountPerBucket[i] = b.Count
+	}
+	e.data = &data
+}
+
+func (e *extractedData) VisitSummaryValue(v *metricdata.Summary) {
+	e.data = &view.DistributionData{
+		Count: v.Count,
+		Mean:  v.Sum / float64(v.Count),
+	}
+}
+
 func checkExactlyOneRow(t test.T, name string) *view.Row {
 	t.Helper()
-	d, err := view.RetrieveData(name)
-	if err != nil {
-		t.Error("Reporter.Report() error", "metric", name, "error", err)
-		return nil
-	}
-	if len(d) != 1 {
-		t.Error("Reporter.Report() wrong length", "metric", name, "got", len(d), "want", 1)
-		return nil
-	}
 
-	return d[0]
+	// We use metricexport.Reader.ReadAndExport to fetch the data, because it
+	// works across multiple Meters / resources, but convert it to view.Data to
+	// avoid disturbing existing contracts.
+	me := getMetrics()
+
+	for _, metric := range me.Data {
+		if metric.Descriptor.Name != name {
+			continue
+		}
+		if len(metric.TimeSeries) != 1 {
+			t.Error(fmt.Sprintf("Expected one row for %q, got %d rows: %+v", name, len(metric.TimeSeries), metric.TimeSeries))
+			return nil
+		}
+		desc := metric.Descriptor
+		ts := metric.TimeSeries[0]
+		if len(ts.Points) < 1 {
+			t.Error(fmt.Sprintf("No data points for %q: %+v", name, ts))
+			return nil
+		}
+
+		// Convert the exported metrics to view.Data to avoid disturbing tests. This
+		// should be better with OpenTelemetry
+		result := &view.Row{
+			Tags: make([]tag.Tag, 0, len(desc.LabelKeys)),
+		}
+
+		for i, k := range desc.LabelKeys {
+			if ts.LabelValues[i].Present {
+				result.Tags = append(result.Tags, tag.Tag{tag.MustNewKey(k.Key), ts.LabelValues[i].Value})
+			}
+		}
+
+		data := extractedData{}
+		ts.Points[0].ReadValue(&data)
+		result.Data = data.data
+		return result
+	}
+	t.Error(fmt.Sprintf("Unable to find row for %q in metrics:\n%+v", name, me.Data))
+	return nil
 }
 
 func checkRowTags(t test.T, row *view.Row, name string, wantTags map[string]string) {
