@@ -995,13 +995,11 @@ func TestStackdriverRecord(t *testing.T) {
 				{Measure: servedCount, Aggregation: view.Count()},
 				{Measure: statCount, Aggregation: view.Count()},
 			}
-			//err = view.Register(v...)
-			err = RegisterResourceView(v...)
+			err = view.Register(v...)
 			if err != nil {
 				t.Errorf("Failed to register %+v in stats backend: %v", v, err)
 			}
-			//defer view.Unregister(v...)
-			defer UnregisterResourceView(v...)
+			defer view.Unregister(v...)
 
 			// Try recording each metric and checking the result.
 			Record(ctx, servedCount.M(1))

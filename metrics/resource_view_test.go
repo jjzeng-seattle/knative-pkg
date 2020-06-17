@@ -267,16 +267,16 @@ func TestMetricsExport(t *testing.T) {
 				t.Fatalf("failed to read prometheus response: %+v", err)
 			}
 			want := `# HELP testComponent_global_export_counts Count of exports via standard OpenCensus view.
-		# TYPE testComponent_global_export_counts counter
-		testComponent_global_export_counts 2
-		# HELP testComponent_resource_global_export_count Count of exports via RegisterResourceView.
-		# TYPE testComponent_resource_global_export_count counter
-		testComponent_resource_global_export_count 2
-		# HELP testComponent_testing_value Test value
-		# TYPE testComponent_testing_value gauge
-		testComponent_testing_value{project="p1",revision="r1"} 0
-		testComponent_testing_value{project="p1",revision="r2"} 1
-		`
+# TYPE testComponent_global_export_counts counter
+testComponent_global_export_counts 2
+# HELP testComponent_resource_global_export_count Count of exports via RegisterResourceView.
+# TYPE testComponent_resource_global_export_count counter
+testComponent_resource_global_export_count 2
+# HELP testComponent_testing_value Test value
+# TYPE testComponent_testing_value gauge
+testComponent_testing_value{project="p1",revision="r1"} 0
+testComponent_testing_value{project="p1",revision="r2"} 1
+`
 			if diff := cmp.Diff(want, string(body)); diff != "" {
 				t.Errorf("Unexpected prometheus output (-want +got):\n%s", diff)
 			}
